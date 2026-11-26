@@ -1,8 +1,13 @@
 """Unified AI summarizer supporting multiple cloud providers."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional
+import json
 import os
+import shutil
+import subprocess
+import tempfile
 import time
 
 from .logger import get_logger
@@ -18,6 +23,9 @@ class MeetingSummary:
     action_items: List[str]
     decisions: List[str]
     participants: List[str]
+    # Optional richer fields; only some providers fill them in.
+    title: str = ""
+    discussion: str = ""  # Markdown, topic by topic
 
 
 class SummaryTruncated(RuntimeError):
@@ -138,11 +146,21 @@ PARTICIPANTS:
             current_section = None
             current_content = []
             
-            for line in response.split('\n'):
-                line = line.strip()
+            for raw_line in response.split('\n'):
+                line = raw_line.strip()
                 
                 # Check for section headers
-                if line.startswith('OVERVIEW:'):
+                if line.startswith('TITLE:'):
+                    if current_section:
+                        sections[current_section] = '\n'.join(current_content).strip()
+                    current_section = 'title'
+                    current_content = [line[len('TITLE:'):].strip()]
+                elif line.startswith('DISCUSSION:'):
+                    if current_section:
+                        sections[current_section] = '\n'.join(current_content).strip()
+                    current_section = 'discussion'
+                    current_content = []
+                elif line.startswith('OVERVIEW:'):
                     if current_section:
                         sections[current_section] = '\n'.join(current_content).strip()
                     current_section = 'overview'
@@ -167,6 +185,9 @@ PARTICIPANTS:
                         sections[current_section] = '\n'.join(current_content).strip()
                     current_section = 'participants'
                     current_content = []
+                elif current_section == 'discussion':
+                    # Free-form markdown: keep blank lines and indentation.
+                    current_content.append(raw_line.rstrip())
                 elif line and current_section:
                     current_content.append(line)
             
@@ -214,12 +235,19 @@ PARTICIPANTS:
             else:
                 participants = []
             
+            # Quotes would break the note's YAML frontmatter.
+            title = sections.get('title', '').strip().strip('"').strip().replace('"', "'")
+            if title.lower() in ('', 'none', 'n/a'):
+                title = ''
+
             return MeetingSummary(
                 overview=overview,
                 key_points=key_points,
                 action_items=action_items,
                 decisions=decisions,
-                participants=participants
+                participants=participants,
+                title=title[:80],
+                discussion=sections.get('discussion', '').strip(),
             )
             
         except Exception as e:
@@ -754,3 +782,138 @@ class CopilotSummarizer(BaseSummarizer):
                     )
                     logger.error(error_msg, exc_info=True)
                     raise
+
+
+class ClaudeCodeSummarizer(BaseSummarizer):
+    """Summarizer that runs Claude Code headless (``claude -p``).
+
+    Uses whatever account the local ``claude`` CLI is logged in with — for
+    most people that's their Claude Pro/Max subscription, so there's no API
+    key to manage and no per-token bill. The session gets no tools, no MCP
+    servers, no user/project settings (so no hooks fire), runs in an empty
+    temporary directory, and isn't saved to session history: it can only
+    read the prompt and write text back.
+    """
+
+    MODELS = {
+        "haiku": {"id": "haiku", "name": "Claude Haiku (Claude Code)"},
+        "sonnet": {"id": "sonnet", "name": "Claude Sonnet (Claude Code)"},
+        "opus": {"id": "opus", "name": "Claude Opus (Claude Code)"},
+    }
+
+    TIMEOUT_SECONDS = 900  # a long meeting on Opus can take several minutes
+
+    # Desktop launchers don't always carry the shell's PATH, so look in the
+    # usual install locations too.
+    _FALLBACK_PATHS = (
+        "~/.local/bin/claude",
+        "~/.claude/local/claude",
+        "~/.local/share/mise/installs/claude/latest/claude",
+        "~/.local/share/mise/shims/claude",
+        "~/.npm-global/bin/claude",
+        "/usr/local/bin/claude",
+    )
+
+    def __init__(self, api_key: Optional[str] = None, model: str = "sonnet", binary: Optional[str] = None):
+        if model not in self.MODELS:
+            raise ValueError(f"Invalid model: {model}. Choose from: {list(self.MODELS.keys())}")
+        self.model_config = self.MODELS[model]
+        self.model = self.model_config["id"]
+        self.binary = binary or self.find_binary()
+        if not self.binary:
+            raise ValueError(
+                "Claude Code CLI not found. Install it (https://claude.com/claude-code) "
+                "and run `claude` once to log in."
+            )
+
+    @classmethod
+    def find_binary(cls) -> Optional[str]:
+        override = os.getenv("OMASCRIBE_CLAUDE_BIN")
+        if override:
+            return override
+        found = shutil.which("claude")
+        if found:
+            return found
+        for candidate in cls._FALLBACK_PATHS:
+            path = Path(candidate).expanduser()
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path)
+        return None
+
+    def _build_prompt(self, transcript: str, user_notes: str = "") -> str:
+        base = super()._build_prompt(transcript, user_notes=user_notes)
+        # Ask for two extra sections on top of the shared format: a short
+        # title, and a readable topic-by-topic write-up of the discussion.
+        return base + """
+ALSO include these two extra sections, using the same "HEADER:" style:
+
+TITLE: [a short, specific meeting title, max 8 words, no date]
+
+Put TITLE first, before OVERVIEW.
+
+DISCUSSION:
+[A readable write-up of the meeting, organised by topic in the order they came up.
+Use a "#### Topic name" sub-heading per topic, followed by a short paragraph and/or
+bullets covering what was said, the reasoning, numbers, names and open questions.
+Write it for someone who missed the meeting. Skip small talk and filler.]
+
+Put DISCUSSION last, after PARTICIPANTS. Output only the sections, with no preamble.
+"""
+
+    def _command(self) -> list:
+        return [
+            self.binary,
+            "-p",
+            "--model", self.model,
+            "--output-format", "json",
+            "--tools", "",
+            "--strict-mcp-config",
+            "--setting-sources", "",
+            "--no-session-persistence",
+        ]
+
+    @staticmethod
+    def _environment() -> dict:
+        env = dict(os.environ)
+        # An API key in the environment would make Claude Code bill the API
+        # instead of using the logged-in subscription.
+        for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+            env.pop(key, None)
+        return env
+
+    def summarize(self, transcript: str, user_notes: str = "") -> MeetingSummary:
+        logger.info(f"Generating AI summary with {self.model_config['name']} ({len(transcript.split())} words)")
+        prompt = self._build_prompt(transcript, user_notes=user_notes)
+        with tempfile.TemporaryDirectory(prefix="omascribe-claude-") as workdir:
+            try:
+                completed = subprocess.run(
+                    self._command(),
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    cwd=workdir,
+                    env=self._environment(),
+                    timeout=self.TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f"Claude Code did not finish within {self.TIMEOUT_SECONDS // 60} minutes")
+
+        payload = None
+        try:
+            payload = json.loads(completed.stdout)
+        except ValueError:
+            pass
+
+        if completed.returncode != 0 or not isinstance(payload, dict) or payload.get("is_error"):
+            detail = ""
+            if isinstance(payload, dict):
+                detail = str(payload.get("result") or payload.get("subtype") or "")
+            detail = detail or completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(f"Claude Code failed (exit {completed.returncode}): {detail[:500]}")
+
+        self._raise_if_truncated(payload.get("stop_reason"), limit_reasons=("max_tokens",))
+        result = payload.get("result") or ""
+        if not result.strip():
+            raise RuntimeError("Claude Code returned an empty summary")
+        logger.info(f"Summary generated with {self.model_config['name']} in {payload.get('duration_ms', '?')}ms")
+        return self._parse_response(result)

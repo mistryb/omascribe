@@ -93,6 +93,25 @@ def _process_matches(payload: dict) -> bool:
     return bool(boot_id and start_time) and payload.get("boot_id") == boot_id and payload.get("start_time") == start_time
 
 
+def _transcriptions() -> list[dict]:
+    """Unfinished transcriptions from any Omascribe window (best effort)."""
+    from . import jobs  # local import: jobs depends on this module
+
+    try:
+        found = jobs.list_jobs()
+    except OSError:
+        return []
+    return [
+        {
+            "title": jobs.display_title(job),
+            "state": job["state"],
+            "stage": job.get("stage", ""),
+            "started_at": job.get("started_at"),
+        }
+        for job in found
+    ]
+
+
 def bar_status() -> int:
     """Print Waybar-style JSON understood by Quattro command modules."""
     result = {
@@ -129,6 +148,17 @@ def bar_status() -> int:
     except (FileNotFoundError, KeyError, TypeError, ValueError, OSError, ProcessLookupError):
         pass
 
+    # A transcription can be running in a window other than the one that
+    # owns the status file (or the status file may be gone). Surface it.
+    running = [t for t in _transcriptions() if t["state"] == "running"]
+    if running and result["class"] != "active":
+        noun = "recording" if len(running) == 1 else f"{len(running)} recordings"
+        result = {
+            "text": "󰄬",
+            "tooltip": f"Transcribing {noun}: " + ", ".join(t["title"] for t in running),
+            "class": "processing",
+        }
+
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     return 0
 
@@ -162,6 +192,9 @@ def panel_data() -> int:
         }
     else:
         status = {"state": "ready", "duration": ""}
+    transcriptions = _transcriptions()
+    if status["state"] == "ready" and any(t["state"] == "running" for t in transcriptions):
+        status["state"] = "processing"
 
     config_obj = config.load_config()
     notes_dir = Path(config_obj.notes_dir).expanduser().absolute()
@@ -190,6 +223,7 @@ def panel_data() -> int:
         "notes_dir": str(notes_dir),
         "config_path": str(config.get_config_path()),
         "recent": recent,
+        "transcriptions": transcriptions,
     }
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     return 0

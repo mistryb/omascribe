@@ -278,3 +278,47 @@ async def test_assemblyai_provider_and_transcriber_switching(tmp_path, monkeypat
         assert screen.config["ai_model"] == "sonnet"
         app.exit()
 
+
+
+@pytest.mark.asyncio
+async def test_unfinished_transcriptions_listed_and_dismissable(tmp_path, monkeypatch):
+    """Running and interrupted transcriptions appear above notes; interrupted ones can be dismissed."""
+    import json
+    from omascribe import jobs
+    from omascribe.app import JobListItem
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.chdir(tmp_path)
+
+    running = jobs.create_job(str(tmp_path / "live.wav"), "Live meeting")
+    stale = jobs.create_job(str(tmp_path / "old.wav"), "Old meeting")
+    path = jobs.jobs_dir() / f"{stale}.json"
+    payload = json.loads(path.read_text())
+    payload["start_time"] = "dead"
+    path.write_text(json.dumps(payload))
+
+    app = OmascribeApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        items = list(app.query(JobListItem))
+        states = {i.full_title: i.job["state"] for i in items}
+        assert states == {"Live meeting": jobs.RUNNING, "Old meeting": jobs.INTERRUPTED}
+
+        meetings = app.query_one("#meetings", ListView)
+        meetings.index = next(n for n, i in enumerate(meetings.children)
+                              if isinstance(i, JobListItem) and i.job_id == stale)
+        await pilot.pause()
+        assert app.check_action("retry_job", ()) is True
+        await pilot.press("d")
+        await pilot.pause()
+        assert [i.job_id for i in app.query(JobListItem)] == [running]
+
+        # Running jobs can't be retried or dismissed.
+        meetings.index = 0
+        await pilot.pause()
+        assert app.check_action("retry_job", ()) is False
+        await pilot.press("d")
+        await pilot.pause()
+        assert [j["id"] for j in jobs.list_jobs()] == [running]
+        app.exit()

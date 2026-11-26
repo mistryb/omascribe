@@ -560,6 +560,7 @@ class SettingsScreen(Screen):
             ("openrouter", "OpenRouter", "Access to 300+ models"),
             ("assemblyai", "AssemblyAI LLM Gateway (Claude)", "Same key as AssemblyAI transcription"),
             ("deepinfra", "DeepInfra (Claude)", "Claude through DeepInfra's OpenAI-compatible API"),
+            ("claude-code", "Claude Code (your subscription)", "Runs `claude -p` locally with your logged-in Claude plan"),
             ("copilot", "GitHub Copilot", "Included with Copilot subscription"),
             ("local", "Local (Ollama)", "Private, offline, slow"),
             ("none", "No AI", "Just transcripts, no summary"),
@@ -588,6 +589,8 @@ class SettingsScreen(Screen):
             widgets.extend(self.render_assemblyai_settings())
         elif current_provider == "deepinfra":
             widgets.extend(self.render_deepinfra_settings())
+        elif current_provider == "claude-code":
+            widgets.extend(self.render_claude_code_settings())
         elif current_provider == "copilot":
             widgets.extend(self.render_copilot_settings())
         elif current_provider == "local":
@@ -756,6 +759,26 @@ class SettingsScreen(Screen):
             if is_current:
                 widgets.append(Static(f"  → {model_desc}", classes="settings-hint"))
 
+        return widgets
+
+    def render_claude_code_settings(self) -> list:
+        """Render Claude Code (local CLI, subscription auth) settings."""
+        from omascribe.ai_summarizer import ClaudeCodeSummarizer
+
+        widgets = [Static("Claude Code Settings", classes="settings-section-title")]
+        widgets.extend(self.render_claude_tier_buttons())
+        binary = ClaudeCodeSummarizer.find_binary()
+        if binary:
+            widgets.append(Static(f"✓ Using {binary}", classes="settings-hint"))
+        else:
+            widgets.append(Static(
+                "⚠ `claude` not found on PATH. Install Claude Code and run `claude` once to log in.",
+                classes="settings-hint",
+            ))
+        widgets.append(Static(
+            "Runs headless with no tools, so it can only read the transcript and write the summary.",
+            classes="settings-hint",
+        ))
         return widgets
 
     def render_assemblyai_settings(self) -> list:
@@ -1115,7 +1138,7 @@ class SettingsScreen(Screen):
                     self.config["ai_model"] = "haiku"
                 elif event.button.provider_id == "openrouter":
                     self.config["ai_model"] = "balanced"
-                elif event.button.provider_id in ("assemblyai", "deepinfra"):
+                elif event.button.provider_id in ("assemblyai", "deepinfra", "claude-code"):
                     self.config["ai_model"] = "sonnet"
                 elif event.button.provider_id == "copilot":
                     self.config["ai_model"] = "mini"
