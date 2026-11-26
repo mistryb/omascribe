@@ -50,6 +50,7 @@ omascribe
 | `t` | View transcript |
 | `T` | Manage tags |
 | `d` | Delete |
+| `R` | Retry an interrupted / failed transcription |
 | `,` | Settings |
 | `A` | Audio test |
 | `q` | Quit |
@@ -58,6 +59,8 @@ omascribe
 | `1` / `2` | Focus Meetings / Note pane |
 
 During recording, write notes in the text area — they're fed to the AI as extra context.
+
+Recordings being transcribed are listed at the top of the Meetings pane with their current stage and elapsed time — including ones running in another Omascribe window. If Omascribe is closed mid-transcription, the recording stays listed as **Interrupted**: press `R` to transcribe it again or `d` to dismiss it (the audio file is kept).
 
 ## AI Setup
 
@@ -81,6 +84,7 @@ Claude through an OpenAI-compatible endpoint — `ai_model: haiku | sonnet | opu
 |---|---|---|
 | `assemblyai` | `ASSEMBLYAI_API_KEY` | AssemblyAI's LLM Gateway; the same key as cloud transcription below. Model access is enabled per account. |
 | `deepinfra` | `DEEPINFRA_API_KEY` | DeepInfra's OpenAI-compatible API. |
+| `claude-code` | none | Runs Claude Code headless (`claude -p`) with whatever account the local `claude` CLI is logged into — e.g. your Claude Pro/Max subscription. No tools, no MCP servers, no settings/hooks, nothing saved to session history. Also suggests a title (when you didn't type one) and adds a topic-by-topic **Discussion** section to the note. |
 
 Both are small subclasses of `OpenAICompatibleSummarizer` (a base URL, an env
 var and a tier → model-id table), so another OpenAI-compatible host is a few
@@ -150,7 +154,7 @@ Full transcripts with timestamps are saved separately in `transcripts/`.
 Settings are stored in `~/.config/omascribe/config.yaml`:
 
 ```yaml
-ai_provider: anthropic        # none | openai | anthropic | openrouter | assemblyai | deepinfra | copilot | local
+ai_provider: anthropic        # none | openai | anthropic | openrouter | assemblyai | deepinfra | copilot | claude-code | local
 ai_model: haiku               # haiku/sonnet | mini/standard | cheap/balanced/premium
 whisper_model: base           # tiny | base | small | medium | large
 whisper_device: cpu           # cpu | cuda | auto

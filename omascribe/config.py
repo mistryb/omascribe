@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 class AppConfig:
     """Application configuration."""
     # AI Summarization
-    ai_provider: str = "none"  # "openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "copilot", "local", or "none"
+    ai_provider: str = "none"  # "openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "copilot", "claude-code", "local", or "none"
     ai_model: str = "haiku"  # Model tier (varies by provider)
     
     # API Keys (or set environment variables)
@@ -198,7 +198,7 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
         return False, "Invalid recording_retention_days: expected an integer"
 
     # Validate AI provider
-    valid_providers = ["openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "copilot", "local", "none"]
+    valid_providers = ["openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "copilot", "claude-code", "local", "none"]
     if config.ai_provider not in valid_providers:
         return False, f"Invalid ai_provider: {config.ai_provider}. Must be one of {valid_providers}"
     
@@ -251,8 +251,8 @@ def validate_config(config: AppConfig) -> tuple[bool, Optional[str]]:
                 f"Invalid ai_model for Copilot: {config.ai_model}. Must be one of {valid_models}",
             )
     
-    elif config.ai_provider in ("assemblyai", "deepinfra"):
-        label = {"assemblyai": "AssemblyAI", "deepinfra": "DeepInfra"}[config.ai_provider]
+    elif config.ai_provider in ("assemblyai", "deepinfra", "claude-code"):
+        label = {"assemblyai": "AssemblyAI", "deepinfra": "DeepInfra", "claude-code": "Claude Code"}[config.ai_provider]
         valid_models = ["haiku", "sonnet", "opus"]
         if config.ai_model not in valid_models:
             return False, f"Invalid ai_model for {label}: {config.ai_model}. Must be one of {valid_models}"

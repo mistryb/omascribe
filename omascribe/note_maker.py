@@ -24,6 +24,7 @@ try:
         AssemblyAISummarizer,
         DeepInfraSummarizer,
         CopilotSummarizer,
+        ClaudeCodeSummarizer,
         MeetingSummary,
     )
     CLOUD_AVAILABLE = True
@@ -32,7 +33,7 @@ except ImportError:
     # Fallback MeetingSummary for type hints
     MeetingSummary = None  # type: ignore
 
-CLOUD_PROVIDERS = ("openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "copilot")
+CLOUD_PROVIDERS = ("openai", "anthropic", "openrouter", "assemblyai", "deepinfra", "copilot", "claude-code")
 
 
 class NoteMaker:
@@ -79,6 +80,7 @@ class NoteMaker:
                         AssemblyAISummarizer,
                         DeepInfraSummarizer,
                         CopilotSummarizer,
+                        ClaudeCodeSummarizer,
                     )
                     
                     if ai_provider == "openai":
@@ -105,6 +107,10 @@ class NoteMaker:
                         model_name = DeepInfraSummarizer.MODELS[ai_model]["name"]
                         logger.info(f"AI summarization enabled (DeepInfra: {model_name})")
                         
+                    elif ai_provider == "claude-code":
+                        self.summarizer = ClaudeCodeSummarizer(model=ai_model)
+                        model_name = ClaudeCodeSummarizer.MODELS[ai_model]["name"]
+                        logger.info(f"AI summarization enabled ({model_name}, {self.summarizer.binary})")
                     elif ai_provider == "copilot":
                         self.summarizer = CopilotSummarizer(
                             api_key=api_key, model=ai_model
@@ -169,6 +175,7 @@ class NoteMaker:
         """
         now = datetime.now()
         
+        auto_title = title is None
         if title is None:
             title = f"Meeting {now.strftime('%Y-%m-%d %H:%M')}"
         
@@ -194,6 +201,10 @@ class NoteMaker:
                     'questions': []  # AI summary includes this
                 }
                 logger.info("AI summary generated successfully")
+                # No title typed during recording: use the one the model suggested.
+                if auto_title and getattr(ai_summary, "title", ""):
+                    title = ai_summary.title
+                    logger.info(f"Using AI-suggested title: {title}")
             except Exception as e:
                 ai_error = f"AI summarization failed: {type(e).__name__}: {str(e)}"
                 logger.error(ai_error, exc_info=True)
@@ -448,6 +459,13 @@ This meeting covered several topics. Key themes included: {', '.join(summary['ke
         if ai_summary.participants:
             sections.append("### Participants\n")
             sections.append(", ".join(ai_summary.participants))
+            sections.append("")
+
+        # Topic-by-topic write-up (Claude Code provider)
+        discussion = getattr(ai_summary, "discussion", "")
+        if discussion:
+            sections.append("### Discussion\n")
+            sections.append(discussion)
             sections.append("")
         
         return "\n".join(sections)
